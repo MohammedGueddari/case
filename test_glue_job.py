@@ -1,25 +1,58 @@
 import sys
-import os
-import mock
-import pytest
+import boto3
 import json
-from unittest.mock import MagicMock
-from pyspark.sql import SparkSession
+import requests
+from awsglue.transforms import *
 from pyspark.context import SparkContext
-from unittest.mock import call
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import Dynamicframe
 from datetime import datetime
-import calendar
 
-sys.path.append(os.path.abspath('./'))
-import glue_job
-
-spark = SparkSession.builder.getOrCreate()
 
 sc = SparkContext.getOrCreate()
-sc.addPyFile('./glue_job')
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
 
-@pytest.fixture(autouse=True)
-def append_sys_args():
-    sys.argv.append('--JOB_NAME')
-    yield
-    sys.argv.remove('--JOB_NAME')
+glue_client = boto3.client("glue")
+lambda_client = boto3.client("lambda") 
+
+def captura_api():
+    url = 'https://api.openbrewerydb.org/breweries'
+    response = requests.get(url)
+
+    df = spark.createDataFrame(response)
+    dynamic_frame = DynamicFrame.fromDF(df, glueContext, "dynamic_frame")
+    return dynamic_frame
+    
+
+def grava_resultado(glueContext, dynamicframe):
+    sink = glueContext.getSink(
+        path="s3://bucket/tabelaXX",
+        connection_type="s3",
+        updateBehavior="UPDATE_IN_DATABASE",
+        partitionKeys=[],
+        enableUpdateCatalog=True,
+        transformation_ctx="sink"
+    )
+    sink.setFormat("json")
+    sink.setCatalogInfo(catalogDatabase="target_db_name", catalogTableName="target_table_name")
+    sink.writeFrame(dynamicframe)
+
+def main():
+    try:
+        grava_resultado(captura_api())
+        glueContext.commit()
+    except:
+        payload = {
+            "job_name": "glue_job)",
+            "key2": datetime.now()
+        }
+        json_payload = json.dumps(payload)
+        response = lambda_client.invoke(
+        FunctionName="function_error",
+        InvocationType='RequestResponse',  # Use 'Event' for async invocation
+        Payload=json_payload
+)
+
+if __name__ == "__main__":
+    main()
